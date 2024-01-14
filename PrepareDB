@@ -1,0 +1,115 @@
+import pandas as pd
+from pyproj import CRS, Transformer
+import sys
+import os
+import inspect
+import logging
+import re
+
+def setup_logging(log_file):
+    # Create a logger
+    logger = logging.getLogger(__name__)
+
+    # Set the log level
+    logger.setLevel(logging.DEBUG)
+
+    # Create handlers for terminal and file
+    console_handler = logging.StreamHandler()
+    file_handler = logging.FileHandler(log_file)
+
+    # Set level for each handler
+    console_handler.setLevel(logging.INFO)  # For terminal, log only warnings and above
+    file_handler.setLevel(logging.DEBUG)       # For file, log everything
+
+    # Create formatters and add it to handlers
+    time_format = '%H:%M:%S'
+    console_format = logging.Formatter('%(asctime)s[%(levelname)s] --> %(message)s', datefmt=time_format)
+    file_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_format)
+    file_handler.setFormatter(file_format)
+
+    # Add handlers to the logger
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    
+    return logger, log_file
+
+def read_xls_file(file):
+    func_name = inspect.currentframe().f_code.co_name
+    
+    sheets = {}
+    
+    try:
+        xls = pd.ExcelFile(file)
+        logger.debug(f"[{func_name}] File '{file}' succesfuly read")
+    
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name)
+            sheets[sheet_name] = df.astype(str)
+        
+        logger.info(f"[{func_name}] Sheets in the file: {list(sheets.keys())}")
+        return sheets
+    except Exception as e:
+        logger.error(f'[{func_name}] {e}')
+    finally:
+        xls.close()        
+
+def change_coordinates_to_names(sheets):
+    func_name = inspect.currentframe().f_code.co_name
+    #connected_to_columns = ['m_Point_1_connected_to', 'm_Point_2_connected_to']
+
+    for sheet_connection, df_connection in sheets.items():
+        if sheet_connection in connection_sheets_names and not df_connection.empty:
+            logger.debug(f"[{func_name}] Sheet '{sheet_connection}' in progress")
+            for column in connected_to_columns:
+                df_connection[['m_X', 'm_Y']] = df_connection[column].str.split(',', expand=True)
+                for sheet_object, df_object in sheets.items():
+                    if sheet_object in object_sheets_names and not df_object.empty:
+                        logger.debug(f"[{func_name}] Looking names for coordinates in sheet '{sheet_object}'")
+                        df_connection[column] = df_connection.apply(
+                            lambda row: get_name_from_coordinates(row['m_X'], row['m_Y'], df_object, sheet_object, row[column]), axis=1
+                        )
+            df_connection = df_connection.drop(['m_X', 'm_Y'], axis=1)
+            sheets[sheet_connection]=df_connection
+        logger.info(f"[{func_name}] Sheet '{sheet_connection}' done")
+        
+    return sheets
+
+def get_name_from_coordinates(x, y, df_object, sheet_object, original_value):
+    func_name = inspect.currentframe().f_code.co_name
+    logger.debug(f"[{func_name}] Looking for {x,y} in {sheet_object}")
+    matching_rows = (df_object['m_X'] == x) & (df_object['m_Y'] == y)
+
+    if matching_rows.any():
+        logger.debug(f"[{func_name}] Match found for {sheet_object}.{df_object.loc[matching_rows, 'Name'].iloc[0]}")        
+        return f"{sheet_object}.{df_object.loc[matching_rows, 'Name'].iloc[0]}"
+
+    return original_value
+
+
+if __name__ == "__main__":
+    os.system('cls')
+    logger, log_file = setup_logging('PrepareDB.log')
+
+    connection_sheets_names = ['Cable_Power_Line', 'Connector', 'Overhead_Power_Line']
+    object_sheets_names = ['Battery_Unit', 'Bus', 'Circuit_Breaker', 'Disconnector', 'Ground', 'Load', 'Node', 'PV_Unit', 'System', 'Transformer']
+    connected_to_columns = ['m_Point_1_connected_to', 'm_Point_2_connected_to']
+
+    if len(sys.argv) != 3:
+        print("Usage: python script.py <input_excel_file_path> <output_excel_file_path>")
+    else:
+        input_excel_file_path = sys.argv[1]
+        output_excel_file_path = sys.argv[2]
+        
+        # Read Excel file to sheets 
+        sheets = read_xls_file(input_excel_file_path)
+        
+        # Change coordinates to names of objects
+        sheets = change_coordinates_to_names(sheets)
+        #print(sheets)
+        
+        # Create nodes for coordinates without names
+        sheets = create_nodes_for_unmatched_coordinates(sheets)
+        print(sheets['Node'])
+        
+        # Convert coordinates from ITM to Long-Lat
